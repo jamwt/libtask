@@ -1,7 +1,15 @@
 #include "taskimpl.h"
-#include <sys/poll.h>
 #include <fcntl.h>
 
+
+static Tasklist sleeping;
+static int sleepingcounted;
+static uvlong nsec(void);
+static int startedfdtask;
+
+#ifndef __linux__
+
+#include <sys/poll.h>
 enum
 {
 	MAXFD = 1024
@@ -10,10 +18,6 @@ enum
 static struct pollfd pollfd[MAXFD];
 static Task *polltask[MAXFD];
 static int npollfd;
-static int startedfdtask;
-static Tasklist sleeping;
-static int sleepingcounted;
-static uvlong nsec(void);
 
 void
 fdtask(void *v)
@@ -70,6 +74,138 @@ fdtask(void *v)
 	}
 }
 
+void
+fdwait(int fd, int rw)
+{
+	int bits;
+
+	if(!startedfdtask){
+		startedfdtask = 1;
+		taskcreate(fdtask, 0, 32768);
+	}
+
+	if(npollfd >= MAXFD){
+		fprint(2, "too many poll file descriptors\n");
+		abort();
+	}
+	
+	taskstate("fdwait for %s", rw=='r' ? "read" : rw=='w' ? "write" : "error");
+	bits = 0;
+	switch(rw){
+	case 'r':
+		bits |= POLLIN;
+		break;
+	case 'w':
+		bits |= POLLOUT;
+		break;
+	}
+
+	polltask[npollfd] = taskrunning;
+	pollfd[npollfd].fd = fd;
+	pollfd[npollfd].events = bits;
+	pollfd[npollfd].revents = 0;
+	npollfd++;
+	taskswitch();
+}
+
+#else /* HAVE_EPOLL */
+
+// Scalable Linux-specific implementation
+#include <sys/epoll.h>
+
+static int epfd;
+
+void
+fdtask(void *v)
+{
+	int i, ms;
+	Task *t;
+	uvlong now;
+
+	tasksystem();
+	taskname("fdtask");
+    struct epoll_event events[1000];
+	for(;;){
+		/* let everyone else run */
+		while(taskyield() > 0)
+			;
+		/* we're the only one runnable - poll for i/o */
+		errno = 0;
+		taskstate("poll");
+		if((t=sleeping.head) == nil)
+			ms = -1;
+		else{
+			/* sleep at most 5s */
+			now = nsec();
+			if(now >= t->alarmtime)
+				ms = 0;
+			else if(now+5*1000*1000*1000LL >= t->alarmtime)
+				ms = (t->alarmtime - now)/1000000;
+			else
+				ms = 5000;
+		}
+        int nevents;
+		if((nevents = epoll_wait(epfd, events, 1000, ms)) < 0){
+			if(errno == EINTR)
+				continue;
+			fprint(2, "epoll: %s\n", strerror(errno));
+			taskexitall(0);
+		}
+
+		/* wake up the guys who deserve it */
+		for(i=0; i<nevents; i++){
+            taskready((Task *)events[i].data.ptr);
+		}
+
+		now = nsec();
+		while((t=sleeping.head) && now >= t->alarmtime){
+			deltask(&sleeping, t);
+			if(!t->system && --sleepingcounted == 0)
+				taskcount--;
+			taskready(t);
+		}
+	}
+}
+
+
+void
+fdwait(int fd, int rw)
+{
+	if(!startedfdtask){
+		startedfdtask = 1;
+        epfd = epoll_create(1);
+        assert(epfd >= 0);
+		taskcreate(fdtask, 0, 32768);
+	}
+
+	taskstate("fdwait for %s", rw=='r' ? "read" : rw=='w' ? "write" : "error");
+    struct epoll_event ev = {0};
+    ev.data.ptr = taskrunning;
+	switch(rw){
+	case 'r':
+		ev.events |= EPOLLIN | EPOLLPRI;
+		break;
+	case 'w':
+		ev.events |= EPOLLOUT;
+		break;
+	}
+
+    int r = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+    int duped = 0;
+    if (r < 0 || errno == EEXIST) {
+        duped = 1;
+        fd = dup(fd);
+        int r = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+        assert(r == 0);
+    }
+	taskswitch();
+    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &ev);
+    if (duped)
+        close(fd);
+}
+
+#endif /* HAVE_EPOLL */
+
 uint
 taskdelay(uint ms)
 {
@@ -78,6 +214,10 @@ taskdelay(uint ms)
 	
 	if(!startedfdtask){
 		startedfdtask = 1;
+#ifdef __linux__
+        epfd = epoll_create(1);
+        assert(epfd >= 0);
+#endif
 		taskcreate(fdtask, 0, 32768);
 	}
 
@@ -112,39 +252,6 @@ taskdelay(uint ms)
 	return (nsec() - now)/1000000;
 }
 
-void
-fdwait(int fd, int rw)
-{
-	int bits;
-
-	if(!startedfdtask){
-		startedfdtask = 1;
-		taskcreate(fdtask, 0, 32768);
-	}
-
-	if(npollfd >= MAXFD){
-		fprint(2, "too many poll file descriptors\n");
-		abort();
-	}
-	
-	taskstate("fdwait for %s", rw=='r' ? "read" : rw=='w' ? "write" : "error");
-	bits = 0;
-	switch(rw){
-	case 'r':
-		bits |= POLLIN;
-		break;
-	case 'w':
-		bits |= POLLOUT;
-		break;
-	}
-
-	polltask[npollfd] = taskrunning;
-	pollfd[npollfd].fd = fd;
-	pollfd[npollfd].events = bits;
-	pollfd[npollfd].revents = 0;
-	npollfd++;
-	taskswitch();
-}
 
 /* Like fdread but always calls fdwait before reading. */
 int
