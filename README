@@ -1,3 +1,11 @@
+(Fork addendum: This is a fork of libtask that adds support for epoll()
+and other thing helpful for writing high-performance network servers
+using libtask on Linux.
+
+Now back to your regularly scheduled README.  -jamwt)
+
+--------------------------------------------------------------------------------
+
 Libtask is a simple coroutine library.  It runs on Linux (ARM, MIPS, and x86),
 FreeBSD (x86), OS X (PowerPC x86, and x86-64), and SunOS Solaris (Sparc),
 and is easy to port to other systems.
