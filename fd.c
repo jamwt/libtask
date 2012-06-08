@@ -131,7 +131,7 @@ fdtask(void *v)
 			;
 		/* we're the only one runnable - poll for i/o */
 		errno = 0;
-		taskstate("poll");
+		taskstate("epoll");
 		if((t=sleeping.head) == nil)
 			ms = -1;
 		else{
