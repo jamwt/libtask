@@ -1,0 +1,5 @@
+*.o
+libtask.a
+primes
+tcpproxy
+testdelay
