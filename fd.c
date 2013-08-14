@@ -286,7 +286,6 @@ fdwrite(int fd, void *buf, int n)
 	
 	for(tot=0; tot<n; tot+=m){
 #ifdef HAVE_MSG_NOSIGNAL
-        printf("calling send\n");
 		while((m=send(fd, (char*)buf+tot, n-tot, MSG_NOSIGNAL)) < 0 && errno == EAGAIN)
 #else
 		while((m=write(fd, (char*)buf+tot, n-tot)) < 0 && errno == EAGAIN)
